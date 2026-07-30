@@ -105,8 +105,8 @@ jobs:
       - name: Build editor & examples (release)
         run: |
           cargo build --release --target ${{ matrix.target }} --bin blaze-editor
-          cargo build --release --target ${{ matrix.target }} --bin hello-triangle
-          cargo build --release --target ${{ matrix.target }} --bin hello-2d
+          cargo build --release --target ${{ matrix.target }} --bin hello-cube
+          cargo build --release --target ${{ matrix.target }} --bin hello-sprite
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
 
@@ -115,8 +115,8 @@ jobs:
         run: |
           mkdir -p staging/bin
           cp target/${{ matrix.target }}/release/blaze-editor staging/bin/
-          cp target/${{ matrix.target }}/release/hello-triangle staging/bin/ || true
-          cp target/${{ matrix.target }}/release/hello-2d staging/bin/ || true
+          cp target/${{ matrix.target }}/release/hello-cube staging/bin/ || true
+          cp target/${{ matrix.target }}/release/hello-sprite staging/bin/ || true
           cp README.md LICENSE-APACHE LICENSE-MIT staging/ 2>/dev/null || true
           tar -czf ${{ matrix.archive }} -C staging .
 
@@ -126,8 +126,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path staging\bin | Out-Null
           Copy-Item target\${{ matrix.target }}\release\blaze-editor.exe staging\bin\
-          Copy-Item target\${{ matrix.target }}\release\hello-triangle.exe staging\bin\ -ErrorAction SilentlyContinue
-          Copy-Item target\${{ matrix.target }}\release\hello-2d.exe staging\bin\ -ErrorAction SilentlyContinue
+          Copy-Item target\${{ matrix.target }}\release\hello-cube.exe staging\bin\ -ErrorAction SilentlyContinue
+          Copy-Item target\${{ matrix.target }}\release\hello-sprite.exe staging\bin\ -ErrorAction SilentlyContinue
           Copy-Item README.md staging\ -ErrorAction SilentlyContinue
           Copy-Item LICENSE-APACHE staging\ -ErrorAction SilentlyContinue
           Copy-Item LICENSE-MIT staging\ -ErrorAction SilentlyContinue
