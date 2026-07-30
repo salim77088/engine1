@@ -1,13 +1,13 @@
 //! Blaze Engine — Editor entry point
 //!
-//! Builds a default Blaze app with all built-in plugins enabled and hands
-//! it off to `blaze_app::run`, which opens a window, drives the main loop
-//! and renders the editor UI.
+//! Builds a default Blaze app with all built-in plugins enabled and seeds a
+//! few demo entities so the hierarchy panel is not empty on first launch.
 
 use blaze_app::run;
 use blaze_core::App;
 use blaze_ecs::{AppBuilderEcsExt, EcsPlugin, Stage, World};
 use blaze_input::InputPlugin;
+use blaze_math::{Transform, Vec3};
 use blaze_physics::PhysicsPlugin;
 use blaze_script::ScriptPlugin;
 
@@ -20,10 +20,17 @@ fn main() {
     builder.add_plugin(PhysicsPlugin::default());
     builder.add_plugin(ScriptPlugin);
 
-    // Register a tiny demo system that logs FPS once per second-ish.
-    builder.add_system(Stage::Update, |_world: &mut World| {
-        // Intentionally minimal — the engine's job here is just to prove
-        // the scheduler runs. Replace with your gameplay systems.
+    // Seed a few demo entities so the hierarchy panel isn't empty on launch.
+    builder.add_system(Stage::Update, |world: &mut World| {
+        // This system runs every frame — we check the entity count and
+        // spawn the seed entities exactly once.
+        let count = world.query::<&Transform>().iter().count();
+        if count == 0 {
+            world.spawn((Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),));
+            world.spawn((Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)),));
+            world.spawn((Transform::from_translation(Vec3::new(-2.0, 0.0, 0.0)),));
+            log::info!("Seeded 3 demo entities.");
+        }
     });
 
     log::info!("Blaze Engine editor starting…");

@@ -8,7 +8,7 @@ pub mod event;
 pub mod plugin;
 pub mod time;
 
-pub use app::{App, AppBuilder, Runner};
+pub use app::{App, AppBuilder, Resources, Runner};
 pub use event::{Event, EventBus, SubscriberId};
 pub use plugin::Plugin;
 pub use time::Time;

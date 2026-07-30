@@ -1,10 +1,16 @@
 //! Blaze Engine — Renderer
 //!
-//! Thin wgpu wrapper exposing a `Renderer` with a clear-color render pass
-//! and a triangle pipeline. This is intentionally minimal: it gives the
-//! engine a real, working 3D backend without dragging in heavy abstractions
-//! that would dominate a small project. Future versions will grow mesh,
-//! material and lighting pipelines on top of this base.
+//! wgpu wrapper that owns:
+//!   * the GPU device/queue,
+//!   * the surface that backs the OS window,
+//!   * a tiny built-in triangle pipeline used as the engine's default
+//!     "hello world" content,
+//!   * an `egui_wgpu::Renderer` so the editor UI can be drawn on top of
+//!     the game viewport in the same render pass.
+//!
+//! The `render_with_ui` method is the one the editor calls every frame:
+//! it runs the game pass (clear + triangle), then renders the egui paint
+//! jobs over the result.
 
 use anyhow::{Context, Result};
 use blaze_math::Color;
@@ -85,6 +91,10 @@ pub struct Renderer {
     pub clear_color: Color,
     triangle_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    /// egui <-> wgpu bridge. Created lazily so users who never open the
+    /// editor don't pay the cost.
+    pub egui_renderer: egui_wgpu::Renderer,
+    pub egui_format: wgpu::TextureFormat,
 }
 
 impl Renderer {
@@ -155,6 +165,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        // egui renderer — same format as the surface so we can render into
+        // the same view without an extra blit.
+        let egui_renderer = egui_wgpu::Renderer::new(&ctx.device, format, None, 1, false);
+
         Ok(Self {
             ctx,
             surface,
@@ -162,6 +176,8 @@ impl Renderer {
             clear_color: blaze_math::color::CORNFLOWER_BLUE,
             triangle_pipeline,
             vertex_buffer,
+            egui_renderer,
+            egui_format: format,
         })
     }
 
@@ -172,6 +188,91 @@ impl Renderer {
         self.surface.configure(&self.ctx.device, &self.surface_config);
     }
 
+    /// Render a frame consisting of the game viewport (clear + triangle)
+    /// followed by the egui paint jobs on top.
+    pub fn render_with_ui(
+        &mut self,
+        paint_jobs: &[egui::epaint::ClippedPrimitive],
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        textures_delta: &egui::TexturesDelta,
+    ) -> Result<()> {
+        let frame = self.surface.get_current_texture().context("get_current_texture")?;
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Blaze encoder"),
+        });
+
+        // ----- game pass: clear + triangle -----
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blaze game pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.clear_color.x as f64,
+                            g: self.clear_color.y as f64,
+                            b: self.clear_color.z as f64,
+                            a: self.clear_color.w as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.triangle_pipeline);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.draw(0..3, 0..1);
+        }
+
+        // ----- egui pass: paint the editor UI on top -----
+        for (id, image_delta) in &textures_delta.set {
+            self.egui_renderer.update_texture(
+                &self.ctx.device,
+                &self.ctx.queue,
+                *id,
+                image_delta,
+            );
+        }
+        self.egui_renderer.update_buffers(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &mut encoder,
+            paint_jobs,
+            screen_descriptor,
+        );
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blaze egui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.egui_renderer.render(&mut pass.forget_lifetime(), paint_jobs, screen_descriptor);
+        }
+        for id in &textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
+
+        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
+    /// Render the game viewport only (no editor UI). Used by the
+    /// `hello-triangle` example.
     pub fn render(&mut self) -> Result<()> {
         let frame = self.surface.get_current_texture().context("get_current_texture")?;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());

@@ -16,6 +16,7 @@ blaze-core.workspace = true
 blaze-app.workspace = true
 blaze-ecs.workspace = true
 blaze-input.workspace = true
+blaze-math.workspace = true
 blaze-render.workspace = true
 blaze-physics.workspace = true
 blaze-ui.workspace = true

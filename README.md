@@ -4,9 +4,9 @@ A lightweight, modern 2D/3D game engine built in Rust on top of 2026-era
 libraries. Designed to be small enough to read in a weekend, fast enough
 for real games, and free of licensing surprises.
 
-> **Status:** alpha — API still evolving. The renderer, ECS, physics, input,
-> scripting and editor scaffolding all work today; mesh/material pipelines,
-> asset loading, and the full scene editor are growing on `main`.
+> **Status:** alpha — API still evolving. The editor UI is now live with
+> scene hierarchy, inspector, console, and asset browser panels rendered
+> on top of the game viewport via `egui-wgpu`.
 
 ---
 
