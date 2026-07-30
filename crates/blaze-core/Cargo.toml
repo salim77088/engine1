@@ -1,0 +1,15 @@
+[package]
+name = "blaze-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core application loop, plugin system and event bus for Blaze Engine"
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+instant.workspace = true

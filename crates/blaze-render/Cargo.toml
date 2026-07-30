@@ -1,0 +1,18 @@
+[package]
+name = "blaze-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wgpu-based renderer for Blaze Engine"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-math.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+log.workspace = true
+anyhow.workspace = true

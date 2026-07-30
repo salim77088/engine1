@@ -1,0 +1,22 @@
+[package]
+name = "hello-2d"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "2D example with ECS + physics + input"
+
+[[bin]]
+name = "hello-2d"
+path = "src/main.rs"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-app.workspace = true
+blaze-ecs.workspace = true
+blaze-input.workspace = true
+blaze-physics.workspace = true
+blaze-math.workspace = true
+log.workspace = true
+env_logger.workspace = true

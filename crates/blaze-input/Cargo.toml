@@ -1,0 +1,13 @@
+[package]
+name = "blaze-input"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Input handling for Blaze Engine (keyboard / mouse / gamepad state)"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-math.workspace = true
+parking_lot.workspace = true

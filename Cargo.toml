@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/blaze-core",
+    "crates/blaze-math",
+    "crates/blaze-ecs",
+    "crates/blaze-input",
+    "crates/blaze-render",
+    "crates/blaze-physics",
+    "crates/blaze-ui",
+    "crates/blaze-script",
+    "crates/blaze-app",
+    "editor",
+    "examples/hello-triangle",
+    "examples/hello-2d",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Blaze Engine Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/salim77088/engine1"
+homepage = "https://github.com/salim77088/engine1"
+keywords = ["game-engine", "graphics", "gamedev", "rust", "wgpu"]
+categories = ["game-engines", "graphics", "rendering"]
+readme = "README.md"
+
+[workspace.dependencies]
+# Internal crates
+blaze-core     = { path = "crates/blaze-core" }
+blaze-math     = { path = "crates/blaze-math" }
+blaze-ecs      = { path = "crates/blaze-ecs" }
+blaze-input    = { path = "crates/blaze-input" }
+blaze-render   = { path = "crates/blaze-render" }
+blaze-physics  = { path = "crates/blaze-physics" }
+blaze-ui       = { path = "crates/blaze-ui" }
+blaze-script   = { path = "crates/blaze-script" }
+blaze-app      = { path = "crates/blaze-app" }
+
+# External — 2026-era stable crates
+wgpu         = "22"
+winit        = "0.30"
+pollster     = "0.3"
+bytemuck     = { version = "1.18", features = ["derive"] }
+glam         = { version = "0.29", features = ["bytemuck"] }
+hecs         = "0.10"
+rapier2d     = "0.22"
+rapier3d     = "0.22"
+egui         = "0.29"
+egui-wgpu    = "0.29"
+egui-winit   = "0.29"
+rhai         = { version = "1.19", features = ["sync"] }
+log          = "0.4"
+env_logger   = "0.11"
+anyhow       = "1.0"
+thiserror    = "1.0"
+parking_lot  = "0.12"
+image        = "0.25"
+instant      = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

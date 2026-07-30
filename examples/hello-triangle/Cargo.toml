@@ -1,0 +1,18 @@
+[package]
+name = "hello-triangle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal Blaze example — opens a window and renders a triangle"
+
+[[bin]]
+name = "hello-triangle"
+path = "src/main.rs"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-app.workspace = true
+log.workspace = true
+env_logger.workspace = true

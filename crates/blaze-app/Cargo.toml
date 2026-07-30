@@ -1,0 +1,29 @@
+[package]
+name = "blaze-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Default app runner that wires Blaze subsystems together with winit"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-math.workspace = true
+blaze-ecs.workspace = true
+blaze-input.workspace = true
+blaze-render.workspace = true
+blaze-physics.workspace = true
+blaze-ui.workspace = true
+blaze-script.workspace = true
+
+winit.workspace = true
+wgpu.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+log.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+env_logger.workspace = true

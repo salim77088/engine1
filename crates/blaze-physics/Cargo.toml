@@ -1,0 +1,15 @@
+[package]
+name = "blaze-physics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Physics plugin for Blaze Engine (wraps rapier2d)"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-math.workspace = true
+rapier2d.workspace = true
+parking_lot.workspace = true
+log.workspace = true

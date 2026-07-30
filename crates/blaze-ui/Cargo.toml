@@ -1,0 +1,15 @@
+[package]
+name = "blaze-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Editor UI layer for Blaze Engine (egui)"
+
+[dependencies]
+blaze-core.workspace = true
+blaze-math.workspace = true
+egui.workspace = true
+log.workspace = true
+parking_lot.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "blaze-ecs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ECS layer for Blaze Engine (wraps hecs)"
+
+[dependencies]
+blaze-core.workspace = true
+hecs.workspace = true
+parking_lot.workspace = true
+log.workspace = true
+anyhow.workspace = true

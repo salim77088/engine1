@@ -1,0 +1,188 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint / test on Linux first — fast feedback.
+  # ---------------------------------------------------------------------------
+  check:
+    name: Check & Test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system deps (winit/wgpu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb1 libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxfixes-dev libxi-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libasound2-dev libudev-dev libfreetype6-dev libexpat1-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libglib2.0-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: true
+
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Per-OS release builds. We build the editor binary and the examples.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.target }})
+    needs: check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: blaze-editor-linux-x86_64
+            asset_path: target/release/blaze-editor
+            archive: blaze-editor-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: blaze-editor-windows-x86_64
+            asset_path: target/release/blaze-editor.exe
+            archive: blaze-editor-windows-x86_64.zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: blaze-editor-macos-aarch64
+            asset_path: target/release/blaze-editor
+            archive: blaze-editor-macos-aarch64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: blaze-editor-macos-x86_64
+            asset_path: target/release/blaze-editor
+            archive: blaze-editor-macos-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb1 libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxfixes-dev libxi-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libasound2-dev libudev-dev libfreetype6-dev libexpat1-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libglib2.0-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build editor & examples (release)
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin blaze-editor
+          cargo build --release --target ${{ matrix.target }} --bin hello-triangle
+          cargo build --release --target ${{ matrix.target }} --bin hello-2d
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+      - name: Stage artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging/bin
+          cp target/${{ matrix.target }}/release/blaze-editor staging/bin/
+          cp target/${{ matrix.target }}/release/hello-triangle staging/bin/ || true
+          cp target/${{ matrix.target }}/release/hello-2d staging/bin/ || true
+          cp README.md LICENSE-APACHE LICENSE-MIT staging/ 2>/dev/null || true
+          tar -czf ${{ matrix.archive }} -C staging .
+
+      - name: Stage artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging\bin | Out-Null
+          Copy-Item target\${{ matrix.target }}\release\blaze-editor.exe staging\bin\
+          Copy-Item target\${{ matrix.target }}\release\hello-triangle.exe staging\bin\ -ErrorAction SilentlyContinue
+          Copy-Item target\${{ matrix.target }}\release\hello-2d.exe staging\bin\ -ErrorAction SilentlyContinue
+          Copy-Item README.md staging\ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE-APACHE staging\ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE-MIT staging\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path staging\* -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Release job — runs only on tags. Pulls all build artifacts and creates
+  # a GitHub Release with one asset per OS/arch.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Blaze Engine ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            # Blaze Engine ${{ github.ref_name }}
+
+            Automated release built from tag `${{ github.ref_name }}`.
+
+            ## Binaries
+            - **Linux** (x86_64): `blaze-editor-linux-x86_64.tar.gz`
+            - **Windows** (x86_64): `blaze-editor-windows-x86_64.zip`
+            - **macOS** (Apple Silicon): `blaze-editor-macos-aarch64.tar.gz`
+            - **macOS** (Intel): `blaze-editor-macos-x86_64.tar.gz`
+
+            ## Run
+            Extract the archive and run the `blaze-editor` binary inside.
+          files: release/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-pre') }}
