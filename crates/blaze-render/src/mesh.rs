@@ -108,9 +108,9 @@ impl MeshPipeline {
             mapped_at_creation: false,
         });
 
-        // Model bind group layout (binding 0: model uniform).
+        // Model bind group layout (binding 1: model uniform).
         let model_layout = wgpu::BindGroupLayoutEntry {
-            binding: 0,
+            binding: 1,
             visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
