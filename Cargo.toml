@@ -4,19 +4,22 @@ members = [
     "crates/blaze-core",
     "crates/blaze-math",
     "crates/blaze-ecs",
+    "crates/blaze-components",
     "crates/blaze-input",
     "crates/blaze-render",
     "crates/blaze-physics",
+    "crates/blaze-assets",
+    "crates/blaze-scene",
     "crates/blaze-ui",
     "crates/blaze-script",
     "crates/blaze-app",
     "editor",
-    "examples/hello-triangle",
-    "examples/hello-2d",
+    "examples/hello-cube",
+    "examples/hello-sprite",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Blaze Engine Contributors"]
 license = "MIT OR Apache-2.0"
@@ -28,22 +31,25 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates
-blaze-core     = { path = "crates/blaze-core" }
-blaze-math     = { path = "crates/blaze-math" }
-blaze-ecs      = { path = "crates/blaze-ecs" }
-blaze-input    = { path = "crates/blaze-input" }
-blaze-render   = { path = "crates/blaze-render" }
-blaze-physics  = { path = "crates/blaze-physics" }
-blaze-ui       = { path = "crates/blaze-ui" }
-blaze-script   = { path = "crates/blaze-script" }
-blaze-app      = { path = "crates/blaze-app" }
+blaze-core        = { path = "crates/blaze-core" }
+blaze-math        = { path = "crates/blaze-math" }
+blaze-ecs         = { path = "crates/blaze-ecs" }
+blaze-components  = { path = "crates/blaze-components" }
+blaze-input       = { path = "crates/blaze-input" }
+blaze-render      = { path = "crates/blaze-render" }
+blaze-physics     = { path = "crates/blaze-physics" }
+blaze-assets      = { path = "crates/blaze-assets" }
+blaze-scene       = { path = "crates/blaze-scene" }
+blaze-ui          = { path = "crates/blaze-ui" }
+blaze-script      = { path = "crates/blaze-script" }
+blaze-app         = { path = "crates/blaze-app" }
 
 # External — 2026-era stable crates
 wgpu         = "22"
 winit        = "0.30"
 pollster     = "0.3"
 bytemuck     = { version = "1.18", features = ["derive"] }
-glam         = { version = "0.29", features = ["bytemuck"] }
+glam         = { version = "0.29", features = ["bytemuck", "serde"] }
 hecs         = "0.10"
 rapier2d     = "0.22"
 rapier3d     = "0.22"
@@ -58,6 +64,10 @@ thiserror    = "1.0"
 parking_lot  = "0.12"
 image        = "0.25"
 instant      = "0.1"
+serde        = { version = "1", features = ["derive"] }
+ron          = "0.8"
+type-uuid    = "0.1"
+uuid         = { version = "1", features = ["v4", "serde"] }
 
 [profile.release]
 opt-level = 3

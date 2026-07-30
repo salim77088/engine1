@@ -5,11 +5,14 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "wgpu-based renderer for Blaze Engine"
+description = "wgpu-based 2D/3D renderer for Blaze Engine with PBR lighting, camera, sprites"
 
 [dependencies]
 blaze-core.workspace = true
 blaze-math.workspace = true
+blaze-ecs.workspace = true
+blaze-components.workspace = true
+blaze-assets.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 bytemuck.workspace = true
@@ -18,3 +21,6 @@ log.workspace = true
 anyhow.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
+glam.workspace = true
+parking_lot.workspace = true
+image.workspace = true

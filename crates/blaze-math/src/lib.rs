@@ -3,13 +3,15 @@
 //! Thin facade over [`glam`] that exposes the types most games need, plus a
 //! few helper constructors and a transform type used across the engine.
 
+use serde::{Deserialize, Serialize};
+
 pub use glam::{
     Mat2, Mat3, Mat4, Quat, Vec2, Vec3, Vec4,
     UVec2, UVec3, UVec4, IVec2, IVec3, IVec4,
 };
 
 /// Translation + rotation + scale, the bread-and-butter of every scene graph.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -63,7 +65,7 @@ impl Transform {
 }
 
 /// 2D transform variant for 2D games and UI layouts.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform2D {
     pub translation: Vec2,
     pub rotation: f32,

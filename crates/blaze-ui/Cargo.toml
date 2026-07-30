@@ -5,12 +5,14 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Editor UI layer for Blaze Engine (egui)"
+description = "Editor UI for Blaze Engine (egui) — viewport, hierarchy, inspector, console, asset browser"
 
 [dependencies]
 blaze-core.workspace = true
 blaze-math.workspace = true
 blaze-ecs.workspace = true
+blaze-components.workspace = true
+blaze-assets.workspace = true
 egui.workspace = true
 glam.workspace = true
 log.workspace = true

@@ -1,20 +1,17 @@
 [package]
-name = "blaze-physics"
+name = "blaze-assets"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Physics plugin for Blaze Engine — rapier2d/3d + ECS sync"
+description = "Asset loading and caching for Blaze Engine"
 
 [dependencies]
 blaze-core.workspace = true
 blaze-math.workspace = true
-blaze-ecs.workspace = true
-blaze-components.workspace = true
-rapier2d.workspace = true
-rapier3d.workspace = true
 parking_lot.workspace = true
 log.workspace = true
+anyhow.workspace = true
+image.workspace = true
 serde.workspace = true
-glam.workspace = true

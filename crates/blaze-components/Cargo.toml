@@ -1,0 +1,15 @@
+[package]
+name = "blaze-components"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Built-in ECS components for Blaze Engine (Name, Tag, Mesh, Material, Sprite, Camera, lights)"
+
+[dependencies]
+blaze-math.workspace = true
+blaze-ecs.workspace = true
+serde.workspace = true
+glam.workspace = true
+log.workspace = true

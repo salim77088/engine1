@@ -1,22 +1,23 @@
 [package]
-name = "hello-2d"
+name = "hello-sprite"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "2D example with ECS + physics + input"
+description = "Blaze 2D sprite example"
 
 [[bin]]
-name = "hello-2d"
+name = "hello-sprite"
 path = "src/main.rs"
 
 [dependencies]
 blaze-core.workspace = true
 blaze-app.workspace = true
 blaze-ecs.workspace = true
+blaze-components.workspace = true
+blaze-math.workspace = true
 blaze-input.workspace = true
 blaze-physics.workspace = true
-blaze-math.workspace = true
 log.workspace = true
 env_logger.workspace = true

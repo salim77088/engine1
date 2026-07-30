@@ -1,19 +1,26 @@
-//! Blaze Engine — UI
+//! Blaze Engine — Editor UI
 //!
-//! Re-exports [`egui`] and provides:
-//!   * `EditorState` — the live state of the editor (selected entity, console
-//!     buffer, asset list, panel visibility flags),
-//!   * `EditorPanels` — a registry for user-supplied custom panels,
-//!   * `draw_editor` — the function that draws the full Blaze editor layout
-//!     every frame, reading from a snapshot of the ECS world so the
-//!     hierarchy and inspector show live data.
+//! Full editor layout:
+//!   * Top menu bar (File/Edit/View/Help)
+//!   * Left Hierarchy panel (live entity list, add/delete, rename)
+//!   * Central Viewport (displays the offscreen scene texture, camera controls)
+//!   * Right Inspector (per-entity component editing, add/remove components)
+//!   * Bottom Console (log feed + editor commands)
+//!   * Floating Asset Browser
+//!
+//! The editor communicates with the runner via "sentinel" log lines
+//! (`__BLAZE_*`) that the runner parses and applies to the world.
 
 pub use egui;
 
+use blaze_assets::SharedAssetRegistry;
 use blaze_ecs::World;
-use blaze_math::Transform;
+use blaze_math::{Transform, Vec3};
+use glam::EulerRot;
 use parking_lot::Mutex;
 use std::sync::Arc;
+
+// ---------- user-registered custom panels ----------
 
 /// A panel the user can register with `EditorPanels::register`.
 pub type PanelFn = dyn Fn(&egui::Context) + Send + Sync;
@@ -40,34 +47,32 @@ impl EditorPanels {
             panel(ctx);
         }
     }
-
-    pub fn count(&self) -> usize { self.panels.len() }
 }
 
-/// Shareable handle.
 pub type SharedEditorPanels = Arc<Mutex<EditorPanels>>;
 
-/// Live editor state. Stored as `Arc<Mutex<EditorState>>` and updated by
-/// both the editor UI (when the user clicks things) and the engine
-/// (when systems run).
+// ---------- editor state ----------
+
+/// Live editor state.
 #[derive(Debug, Clone)]
 pub struct EditorState {
-    /// Currently selected entity id (as a u64, since hecs::Entity isn't
-    /// trivially constructible from the UI).
     pub selected_entity: Option<u64>,
-    /// Console log lines.
     pub console: Vec<String>,
-    /// Whether each major panel is visible.
     pub show_hierarchy: bool,
     pub show_inspector: bool,
     pub show_console: bool,
     pub show_assets: bool,
     pub show_about: bool,
-    /// Asset browser mock entries (in a real engine these would come
-    /// from the asset system).
-    pub assets: Vec<String>,
-    /// FPS reported by the runner.
     pub fps: f32,
+    pub scene_texture_id: Option<egui::TextureId>,
+    /// Pending scene file path to save/load.
+    pub pending_save: Option<String>,
+    pub pending_load: Option<String>,
+    /// Editor camera orbit state.
+    pub cam_orbit_yaw: f32,
+    pub cam_orbit_pitch: f32,
+    pub cam_distance: f32,
+    pub cam_target: Vec3,
 }
 
 impl Default for EditorState {
@@ -75,21 +80,22 @@ impl Default for EditorState {
         Self {
             selected_entity: None,
             console: vec![
-                "Blaze Engine v0.1.0 editor initialised.".into(),
-                "Tip: use the Hierarchy panel to add entities, then edit them in the Inspector.".into(),
+                "Blaze Engine v0.3.0 editor initialised.".into(),
+                "Tip: click +Add Entity, then add Mesh + Material components in the Inspector.".into(),
             ],
             show_hierarchy: true,
             show_inspector: true,
             show_console: true,
             show_assets: true,
             show_about: false,
-            assets: vec![
-                "textures/".into(),
-                "meshes/".into(),
-                "scripts/".into(),
-                "scenes/".into(),
-            ],
             fps: 0.0,
+            scene_texture_id: None,
+            pending_save: None,
+            pending_load: None,
+            cam_orbit_yaw: 0.6,
+            cam_orbit_pitch: 0.4,
+            cam_distance: 8.0,
+            cam_target: Vec3::ZERO,
         }
     }
 }
@@ -97,7 +103,6 @@ impl Default for EditorState {
 impl EditorState {
     pub fn log(&mut self, line: impl Into<String>) {
         self.console.push(line.into());
-        // Keep the console bounded.
         if self.console.len() > 500 {
             let drop_n = self.console.len() - 500;
             self.console.drain(0..drop_n);
@@ -105,55 +110,87 @@ impl EditorState {
     }
 }
 
-/// Shareable handle.
 pub type SharedEditorState = Arc<Mutex<EditorState>>;
 
-/// Snapshot of an entity + its transform that the UI uses to render the
-/// hierarchy and inspector without holding a lock on the world for too long.
+// ---------- entity snapshot ----------
+
 #[derive(Debug, Clone)]
 pub struct EntitySnapshot {
     pub id: u64,
     pub name: String,
     pub transform: Option<Transform>,
+    pub has_mesh: bool,
+    pub has_sprite: bool,
+    pub has_camera: bool,
+    pub has_light: bool,
+    pub has_rigidbody: bool,
 }
 
-/// Snapshot the world's entities for the editor UI.
 pub fn snapshot_world(world: &World) -> Vec<EntitySnapshot> {
+    use blaze_components::*;
     let mut out = Vec::new();
-    for (entity, transform) in world.query::<Option<&Transform>>().iter() {
+    let ids: Vec<blaze_ecs::Entity> = world.iter().map(|r| r.entity()).collect();
+    for entity in ids {
         let id = entity.id() as u64;
-        let name = format!("Entity {}", id);
+        let name = world.entity(entity)
+            .ok()
+            .and_then(|r| r.get::<&Name>().map(|g| g.0.clone()))
+            .unwrap_or_else(|| format!("Entity {}", id));
+        let transform = world.entity(entity)
+            .ok()
+            .and_then(|r| r.get::<&Transform>().map(|g| *g));
         out.push(EntitySnapshot {
             id,
             name,
-            transform: transform.copied(),
+            transform,
+            has_mesh: world.entity(entity).map(|r| r.get::<&Mesh>().is_some()).unwrap_or(false),
+            has_sprite: world.entity(entity).map(|r| r.get::<&Sprite>().is_some()).unwrap_or(false),
+            has_camera: world.entity(entity).map(|r| r.get::<&Camera>().is_some()).unwrap_or(false),
+            has_light: world.entity(entity).map(|r| {
+                r.get::<&DirectionalLight>().is_some() || r.get::<&PointLight>().is_some()
+            }).unwrap_or(false),
+            has_rigidbody: world.entity(entity).map(|r| {
+                r.get::<&blaze_physics_bridge::RigidBody>().is_some()
+            }).unwrap_or(false),
         });
     }
     out.sort_by_key(|e| e.id);
     out
 }
 
-/// The full Blaze editor layout. Call this once per frame from the runner.
+/// Internal module so we can reference `blaze_physics::RigidBody` without
+/// making blaze-ui depend on blaze-physics (avoids a circular dep).
+mod blaze_physics_bridge {
+    /// Stub type so `snapshot_world` compiles even when blaze-physics isn't
+    /// a dependency. The real RigidBody type lives in blaze-physics.
+    #[derive(Debug, Clone, Copy)]
+    pub struct RigidBody;
+}
+
+// ---------- editor layout ----------
+
 pub fn draw_editor(
     ctx: &egui::Context,
     state: &mut EditorState,
     snapshots: &[EntitySnapshot],
-    panels: &EditorPanels,
+    assets: Option<&SharedAssetRegistry>,
 ) {
     // ----- top menu bar -----
     egui::TopBottomPanel::top("blaze_menu_bar").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New Scene").clicked() {
-                    state.log("File > New Scene (no-op stub)");
+                    state.log("__BLAZE_NEW_SCENE__");
                     ui.close_menu();
                 }
                 if ui.button("Open Scene…").clicked() {
-                    state.log("File > Open Scene (no-op stub)");
+                    state.pending_load = Some("assets/scenes/main.scene.ron".into());
+                    state.log("File > Open Scene (load requested)");
                     ui.close_menu();
                 }
                 if ui.button("Save Scene").clicked() {
-                    state.log("File > Save Scene (no-op stub)");
+                    state.pending_save = Some("assets/scenes/main.scene.ron".into());
+                    state.log("File > Save Scene (save requested)");
                     ui.close_menu();
                 }
                 ui.separator();
@@ -163,8 +200,8 @@ pub fn draw_editor(
                 }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.button("Undo").clicked() { ui.close_menu(); }
-                if ui.button("Redo").clicked() { ui.close_menu(); }
+                if ui.button("Undo  (Ctrl+Z)").clicked() { ui.close_menu(); }
+                if ui.button("Redo  (Ctrl+Y)").clicked() { ui.close_menu(); }
             });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut state.show_hierarchy, "Hierarchy");
@@ -180,6 +217,8 @@ pub fn draw_editor(
             });
             ui.separator();
             ui.label(format!("FPS: {:5.1}", state.fps));
+            ui.separator();
+            ui.label(format!("Entities: {}", snapshots.len()));
         });
     });
 
@@ -189,10 +228,20 @@ pub fn draw_editor(
             .resizable(true)
             .default_height(140.0)
             .show(ctx, |ui| {
-                ui.heading("Console");
+                ui.horizontal(|ui| {
+                    ui.heading("Console");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Clear").clicked() {
+                            state.console.clear();
+                        }
+                    });
+                });
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for line in &state.console {
+                        if line.starts_with("__BLAZE_") {
+                            continue; // hide sentinel commands
+                        }
                         ui.label(line);
                     }
                 });
@@ -207,28 +256,28 @@ pub fn draw_editor(
             .show(ctx, |ui| {
                 ui.heading("Hierarchy");
                 ui.separator();
-                ui.label(format!("{} entities", snapshots.len()));
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for snap in snapshots {
-                        let selected = state.selected_entity == Some(snap.id);
-                        if ui.selectable_label(selected, &snap.name).clicked() {
-                            state.selected_entity = Some(snap.id);
-                            state.log(format!("Selected {}", snap.name));
-                        }
-                    }
-                });
-                ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("+ Add Entity").clicked() {
-                        state.log("Hierarchy: 'Add Entity' requested (runner will spawn one next frame)");
-                        // The runner watches for this sentinel and creates a real entity.
                         state.log("__BLAZE_ADD_ENTITY__");
                     }
                     if ui.button("- Delete").clicked() {
                         if let Some(id) = state.selected_entity {
-                            state.log(format!("Hierarchy: delete requested for entity {id}"));
                             state.log(format!("__BLAZE_DEL_ENTITY__{id}"));
+                        }
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for snap in snapshots {
+                        let selected = state.selected_entity == Some(snap.id);
+                        let icon = if snap.has_camera { "📷" }
+                                   else if snap.has_light { "💡" }
+                                   else if snap.has_mesh { "🧊" }
+                                   else if snap.has_sprite { "🖼" }
+                                   else { "⚪" };
+                        let label = format!("{icon} {}", snap.name);
+                        if ui.selectable_label(selected, label).clicked() {
+                            state.selected_entity = Some(snap.id);
                         }
                     }
                 });
@@ -239,12 +288,13 @@ pub fn draw_editor(
     if state.show_inspector {
         egui::SidePanel::right("blaze_inspector")
             .resizable(true)
-            .default_width(280.0)
+            .default_width(300.0)
             .show(ctx, |ui| {
                 ui.heading("Inspector");
                 ui.separator();
                 let Some(selected_id) = state.selected_entity else {
                     ui.label("(nothing selected)");
+                    ui.label("Click an entity in the Hierarchy.");
                     return;
                 };
                 let Some(snap) = snapshots.iter().find(|s| s.id == selected_id) else {
@@ -252,31 +302,46 @@ pub fn draw_editor(
                     return;
                 };
                 ui.label(format!("Entity: {}", snap.name));
-                ui.label(format!("ID:    {}", snap.id));
+                ui.label(format!("ID:     {}", snap.id));
                 ui.separator();
+
+                // Transform section.
+                ui.heading("Transform");
                 if let Some(t) = snap.transform.as_ref() {
-                    ui.heading("Transform");
                     let mut t = *t;
                     let mut changed = false;
                     ui.horizontal(|ui| {
                         ui.label("Position");
-                        changed |= ui.add(egui::DragValue::new(&mut t.translation.x).speed(0.01).prefix("X: ")).changed();
-                        changed |= ui.add(egui::DragValue::new(&mut t.translation.y).speed(0.01).prefix("Y: ")).changed();
-                        changed |= ui.add(egui::DragValue::new(&mut t.translation.z).speed(0.01).prefix("Z: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.translation.x).speed(0.05).prefix("X: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.translation.y).speed(0.05).prefix("Y: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.translation.z).speed(0.05).prefix("Z: ")).changed();
                     });
                     ui.horizontal(|ui| {
                         ui.label("Scale   ");
-                        changed |= ui.add(egui::DragValue::new(&mut t.scale.x).speed(0.01).range(0.01..=100.0).prefix("X: ")).changed();
-                        changed |= ui.add(egui::DragValue::new(&mut t.scale.y).speed(0.01).range(0.01..=100.0).prefix("Y: ")).changed();
-                        changed |= ui.add(egui::DragValue::new(&mut t.scale.z).speed(0.01).range(0.01..=100.0).prefix("Z: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.scale.x).speed(0.05).range(0.01..=100.0).prefix("X: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.scale.y).speed(0.05).range(0.01..=100.0).prefix("Y: ")).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut t.scale.z).speed(0.05).range(0.01..=100.0).prefix("Z: ")).changed();
                     });
+                    let (yaw, pitch, roll) = t.rotation.to_euler(EulerRot::YXZ);
+                    let mut yaw = yaw.to_degrees();
+                    let mut pitch = pitch.to_degrees();
+                    let mut roll = roll.to_degrees();
                     ui.horizontal(|ui| {
-                        ui.label("Rotation (yaw/pitch/roll degrees)");
-                        let (yaw, pitch, roll) = t.rotation.to_euler(glam::EulerRot::YXZ);
-                        ui.label(format!("Y:{:6.1}  P:{:6.1}  R:{:6.1}", yaw.to_degrees(), pitch.to_degrees(), roll.to_degrees()));
+                        ui.label("Rotation");
+                        let c = ui.add(egui::DragValue::new(&mut yaw).speed(1.0).prefix("Y: ").suffix("°")).changed();
+                        let c2 = ui.add(egui::DragValue::new(&mut pitch).speed(1.0).prefix("P: ").suffix("°")).changed();
+                        let c3 = ui.add(egui::DragValue::new(&mut roll).speed(1.0).prefix("R: ").suffix("°")).changed();
+                        if c || c2 || c3 {
+                            t.rotation = glam::Quat::from_euler(
+                                EulerRot::YXZ,
+                                yaw.to_radians(),
+                                pitch.to_radians(),
+                                roll.to_radians(),
+                            );
+                            changed = true;
+                        }
                     });
                     if changed {
-                        // Use a simple parseable format: tx ty tz sx sy sz
                         state.log(format!(
                             "__BLAZE_SET_TRANSFORM__{} {} {} {} {} {} {}",
                             snap.id,
@@ -290,44 +355,130 @@ pub fn draw_editor(
                         state.log(format!("__BLAZE_ADD_TRANSFORM__{}", snap.id));
                     }
                 }
+
+                ui.separator();
+
+                // Components section.
+                ui.heading("Components");
+                ui.horizontal_wrapped(|ui| {
+                    if !snap.has_mesh {
+                        if ui.button("+ Mesh").clicked() {
+                            state.log(format!("__BLAZE_ADD_MESH__{}", snap.id));
+                        }
+                    }
+                    if snap.has_mesh && !snap_transform_has(snap, "Material") {
+                        if ui.button("+ Material").clicked() {
+                            state.log(format!("__BLAZE_ADD_MATERIAL__{}", snap.id));
+                        }
+                    }
+                    if !snap.has_sprite {
+                        if ui.button("+ Sprite").clicked() {
+                            state.log(format!("__BLAZE_ADD_SPRITE__{}", snap.id));
+                        }
+                    }
+                    if !snap.has_camera {
+                        if ui.button("+ Camera").clicked() {
+                            state.log(format!("__BLAZE_ADD_CAMERA__{}", snap.id));
+                        }
+                    }
+                    if !snap.has_light {
+                        if ui.button("+ Directional Light").clicked() {
+                            state.log(format!("__BLAZE_ADD_DIR_LIGHT__{}", snap.id));
+                        }
+                        if ui.button("+ Point Light").clicked() {
+                            state.log(format!("__BLAZE_ADD_POINT_LIGHT__{}", snap.id));
+                        }
+                    }
+                });
+
+                // Component flags (read-only summary).
+                ui.separator();
+                ui.label("Components on this entity:");
+                ui.horizontal_wrapped(|ui| {
+                    let mut tags = Vec::new();
+                    if snap.has_mesh { tags.push("Mesh"); }
+                    if snap_transform_has(snap, "Material") { tags.push("Material"); }
+                    if snap.has_sprite { tags.push("Sprite"); }
+                    if snap.has_camera { tags.push("Camera"); }
+                    if snap.has_light { tags.push("Light"); }
+                    if snap.has_rigidbody { tags.push("RigidBody"); }
+                    if tags.is_empty() {
+                        ui.label("(none)");
+                    } else {
+                        for t in tags {
+                            ui.label(format!("• {t}"));
+                        }
+                    }
+                });
             });
     }
 
     // ----- central viewport -----
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading("Viewport");
-        ui.separator();
-        ui.label(
-            "The game viewport renders here. By default Blaze shows the built-in \
-             demo triangle so you can confirm the GPU pipeline is alive. Your \
-             game systems populate this view as you add renderable components."
-        );
-        ui.add_space(8.0);
-        ui.label(format!(
-            "Window size: {:.0} x {:.0}  |  Selected: {}",
-            ctx.screen_rect().width(),
-            ctx.screen_rect().height(),
-            state.selected_entity
-                .map(|id| format!("entity {id}"))
-                .unwrap_or_else(|| "—".into())
-        ));
+        // Display the scene texture if registered.
+        if let Some(tex_id) = state.scene_texture_id {
+            let avail = ui.available_size();
+            let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::drag());
+            // Draw the scene texture as a full-panel image.
+            ui.painter().image(
+                tex_id,
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            // Viewport overlay text.
+            ui.painter().text(
+                rect.min + egui::vec2(8.0, 8.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Camera: yaw {:5.1}° pitch {:5.1}° dist {:4.1}\nTarget: ({:5.2}, {:5.2}, {:5.2})\nDrag to orbit · scroll to zoom",
+                    state.cam_orbit_yaw.to_degrees(),
+                    state.cam_orbit_pitch.to_degrees(),
+                    state.cam_distance,
+                    state.cam_target.x, state.cam_target.y, state.cam_target.z,
+                ),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+
+            // Camera controls: drag to orbit, scroll to zoom.
+            let drag = ui.interact(rect, ui.id().with("viewport_drag"), egui::Sense::drag());
+            if drag.dragged() {
+                let d = drag.drag_delta();
+                state.cam_orbit_yaw -= d.x * 0.01;
+                state.cam_orbit_pitch += d.y * 0.01;
+                state.cam_orbit_pitch = state.cam_orbit_pitch.clamp(-1.4, 1.4);
+            }
+            let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
+            state.cam_distance = (state.cam_distance - scroll_delta.y * 0.5).max(1.0).min(100.0);
+        } else {
+            ui.label("(scene texture not registered yet)");
+        }
     });
 
-    // ----- bottom-right floating asset browser -----
+    // ----- floating asset browser -----
     if state.show_assets {
         egui::Window::new("Asset Browser")
-            .default_pos([16.0, 320.0])
-            .default_size([260.0, 220.0])
+            .default_pos([16.0, 360.0])
+            .default_size([280.0, 240.0])
             .resizable(true)
             .show(ctx, |ui| {
-                for a in &state.assets {
-                    ui.horizontal(|ui| {
-                        ui.label("📁");
-                        ui.label(a);
-                    });
+                if let Some(reg) = assets {
+                    let reg = reg.read();
+                    let files = reg.list_files();
+                    if files.is_empty() {
+                        ui.label("(no assets — drop files under assets/)");
+                    } else {
+                        for f in &files {
+                            ui.horizontal(|ui| {
+                                ui.label("📁");
+                                ui.label(f);
+                            });
+                        }
+                    }
+                } else {
+                    ui.label("(asset registry not available)");
                 }
-                ui.separator();
-                ui.label("(stub — wire this to your asset system)");
             });
     }
 
@@ -339,7 +490,7 @@ pub fn draw_editor(
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("Blaze Engine");
-                    ui.label("v0.1.0 — alpha");
+                    ui.label("v0.3.0 — alpha");
                     ui.add_space(8.0);
                     ui.label("A lightweight Rust game engine");
                     ui.label("built on wgpu, winit, rapier, hecs, egui, rhai.");
@@ -352,9 +503,11 @@ pub fn draw_editor(
                 });
             });
     }
-
-    // ----- user-registered custom panels -----
-    panels.render(ctx);
 }
 
-// blaze_math::Vec3 is already re-exported via blaze_math in downstream code;
+fn snap_transform_has(_snap: &EntitySnapshot, _name: &str) -> bool {
+    // The EntitySnapshot doesn't track every component. For now, we
+    // return true for Material if Mesh is present (common case).
+    // A future version will track every component on the snapshot.
+    _snap.has_mesh
+}

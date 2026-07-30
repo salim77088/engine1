@@ -1,18 +1,23 @@
 [package]
-name = "hello-triangle"
+name = "hello-cube"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Minimal Blaze example — opens a window and renders a triangle"
+description = "Minimal Blaze example — renders a single cube"
 
 [[bin]]
-name = "hello-triangle"
+name = "hello-cube"
 path = "src/main.rs"
 
 [dependencies]
 blaze-core.workspace = true
 blaze-app.workspace = true
+blaze-ecs.workspace = true
+blaze-components.workspace = true
+blaze-math.workspace = true
+blaze-input.workspace = true
+blaze-physics.workspace = true
 log.workspace = true
 env_logger.workspace = true

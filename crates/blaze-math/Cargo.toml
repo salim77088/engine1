@@ -10,3 +10,4 @@ description = "Math primitives for Blaze Engine (re-exports glam)"
 [dependencies]
 glam.workspace = true
 bytemuck.workspace = true
+serde.workspace = true

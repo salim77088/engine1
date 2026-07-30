@@ -1,17 +1,30 @@
 //! Blaze Engine — App integration
 //!
-//! Wires the core/ecs/input/render/physics/ui/script crates into a single
-//! default winit-based runner. The runner opens a window, drives the main
-//! loop, runs the editor UI on top of the game viewport via `egui_wgpu`,
-//! and forwards editor commands (add entity, delete entity, set transform)
-//! back into the ECS world.
+//! The default runner:
+//!   1. Opens a winit window.
+//!   2. Initialises the renderer (with offscreen scene target + egui overlay).
+//!   3. Each frame:
+//!      a. Runs ECS systems at the right stage (PreUpdate / FixedUpdate / Update / PostUpdate).
+//!      b. Syncs physics (Transform <-> rapier).
+//!      c. Updates the editor camera from the editor state's orbit angles.
+//!      d. Snapshots the world for the UI.
+//!      e. Runs the egui pass (draw_editor).
+//!      f. Applies editor commands (add/delete entity, add/remove component, set transform, save/load scene).
+//!      g. Renders the frame (scene to offscreen + egui on top).
+//!      h. Presents.
 
 use anyhow::Result;
-use blaze_core::{App, AppBuilder};
+use blaze_assets::SharedAssetRegistry;
+use blaze_components::{
+    Camera, DirectionalLight, Material, Mesh, MeshPrimitive, Name, PointLight, Sprite,
+};
+use blaze_core::{App, AppBuilder, Resources};
 use blaze_ecs::{SharedSystems, SharedWorld, Stage};
 use blaze_input::{Input, MouseButton};
-use blaze_math::Transform;
+use blaze_math::{Transform, Vec3};
+use blaze_physics::{physics_sync_system, Collider, RigidBody, SharedPhysics};
 use blaze_render::Renderer;
+use blaze_scene::Scene;
 use blaze_ui::{draw_editor, snapshot_world, EditorPanels, EditorState, SharedEditorState};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -21,12 +34,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
-/// Default Blaze window title.
 pub const DEFAULT_TITLE: &str = "Blaze Engine";
 
-/// Builder-friendly entry point that constructs an `EventLoop`, builds the
-/// `App`, and runs the loop. This is the function most games will call from
-/// their `main`.
 pub fn run(builder: AppBuilder) -> Result<()> {
     env_logger::try_init().ok();
     let event_loop = EventLoop::new()?;
@@ -35,21 +44,17 @@ pub fn run(builder: AppBuilder) -> Result<()> {
     Ok(())
 }
 
-/// Internal state held across the winit event loop.
 struct LoopState {
     app: App,
     renderer: Renderer,
-    /// egui state (context + winit integration).
     egui_ctx: egui::Context,
     egui_winit: egui_winit::State,
-    /// Editor state (selection, console, panel visibility).
     editor_state: SharedEditorState,
-    /// User-registered custom panels.
     panels: Arc<Mutex<EditorPanels>>,
+    scene_texture_id: Option<egui::TextureId>,
     window: Arc<Window>,
 }
 
-/// The winit `ApplicationHandler` we drive from [`run`].
 struct Handler {
     app: Option<AppBuilder>,
     state: Option<LoopState>,
@@ -58,17 +63,14 @@ struct Handler {
 impl ApplicationHandler for Handler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() { return; }
-        let builder = self.app.take().expect("app builder missing");
+        let mut builder = self.app.take().expect("app builder missing");
 
-        // Create the window first so the renderer can target it.
         let window_attrs = Window::default_attributes()
             .with_title(DEFAULT_TITLE)
-            .with_inner_size(winit::dpi::LogicalSize::new(1280, 720));
+            .with_inner_size(winit::dpi::LogicalSize::new(1600, 900));
         let window = Arc::new(event_loop.create_window(window_attrs).expect("create_window"));
+        let mut renderer = Renderer::new(window.clone()).expect("renderer init");
 
-        let renderer = Renderer::new(window.clone()).expect("renderer init");
-
-        // egui context + winit state.
         let egui_ctx = egui::Context::default();
         let viewport_id = egui::ViewportId::ROOT;
         let egui_winit = egui_winit::State::new(
@@ -80,16 +82,17 @@ impl ApplicationHandler for Handler {
             None,
         );
 
-        // Editor state (live selection, console, etc.)
         let editor_state = Arc::new(Mutex::new(EditorState::default()));
-
-        // Insert the editor state as a resource so user code can read & mutate it.
         let panels = Arc::new(Mutex::new(EditorPanels::new()));
-        let mut builder = builder;
+
         builder.insert_resource(editor_state.clone());
         builder.insert_resource(panels.clone());
 
         let app = builder.build().expect("app build");
+
+        // Register the offscreen scene texture with egui.
+        let tex_id = renderer.register_scene_texture(&egui_ctx);
+        editor_state.lock().scene_texture_id = Some(tex_id);
 
         self.state = Some(LoopState {
             app,
@@ -98,21 +101,25 @@ impl ApplicationHandler for Handler {
             egui_winit,
             editor_state,
             panels,
+            scene_texture_id: Some(tex_id),
             window,
         });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else { return };
-
-        // Forward every event to egui-winit first so the editor UI gets
-        // keyboard/mouse focus before the game.
-        let _egui_response = state.egui_winit.on_window_event(&state.window, &event);
+        let _ = state.egui_winit.on_window_event(&state.window, &event);
 
         match event {
             WindowEvent::CloseRequested => { event_loop.exit(); }
             WindowEvent::Resized(size) => {
                 state.renderer.resize(size.width, size.height);
+                // Re-register the scene texture after resize.
+                if state.scene_texture_id.is_some() {
+                    let new_id = state.renderer.reregister_scene_texture(&state.egui_ctx);
+                    state.scene_texture_id = Some(new_id);
+                    state.editor_state.lock().scene_texture_id = Some(new_id);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(input) = state.app.resources.with::<Input, _, _>(|i| i.clone()) {
@@ -149,32 +156,44 @@ impl ApplicationHandler for Handler {
             WindowEvent::RedrawRequested => {
                 state.app.time.tick();
 
-                // Run ECS systems.
+                // ----- 1. Run ECS systems -----
                 let steps = state.app.time.drain_fixed_steps();
                 let _ = state.app.resources.with::<SharedSystems, _, _>(|systems| {
                     let _ = state.app.resources.with::<SharedWorld, _, _>(|world| {
-                        for _ in 0..steps {
-                            systems.lock().run_stage(Stage::PreUpdate, &mut world.lock());
-                            systems.lock().run_stage(Stage::FixedUpdate, &mut world.lock());
+                        // Physics sync at fixed step.
+                        let physics = state.app.resources.with::<SharedPhysics, _, _>(|p| p.clone());
+                        if let Some(physics) = physics {
+                            for _ in 0..steps {
+                                let dt = state.app.time.fixed_step_secs();
+                                {
+                                    let mut w = world.lock();
+                                    systems.lock().run_stage(Stage::PreUpdate, &mut w);
+                                    physics_sync_system(&mut w, &physics, dt);
+                                    systems.lock().run_stage(Stage::FixedUpdate, &mut w);
+                                }
+                            }
                         }
-                        systems.lock().run_stage(Stage::Update, &mut world.lock());
-                        systems.lock().run_stage(Stage::PostUpdate, &mut world.lock());
+                        let mut w = world.lock();
+                        systems.lock().run_stage(Stage::Update, &mut w);
+                        systems.lock().run_stage(Stage::PostUpdate, &mut w);
                     });
                 });
 
-                // Snapshot the world so the editor UI can read entity data
-                // without holding the world lock during the egui pass.
+                // ----- 2. Update the editor camera from the editor state -----
+                update_editor_camera(&state.app.resources, &state.editor_state);
+
+                // ----- 3. Snapshot the world for the UI -----
                 let snapshots = state.app.resources.with::<SharedWorld, _, _>(|world| {
                     snapshot_world(&*world.lock())
                 }).unwrap_or_default();
 
-                // Update FPS in editor state.
+                // ----- 4. Update FPS in editor state -----
                 {
                     let mut es = state.editor_state.lock();
                     es.fps = state.app.time.fps();
                 }
 
-                // Drive the egui pass.
+                // ----- 5. Drive the egui pass -----
                 let mut raw_input: egui::RawInput = state.egui_winit.take_egui_input(&state.window);
                 let screen_size = state.renderer.surface_config.clone();
                 let pixels_per_point = state.window.scale_factor() as f32;
@@ -183,15 +202,17 @@ impl ApplicationHandler for Handler {
                     egui::vec2(screen_size.width as f32, screen_size.height as f32) / pixels_per_point,
                 ));
 
-                let panels_clone_lock = state.panels.lock();
-                let panels_clone: &EditorPanels = &*panels_clone_lock;
+                let assets = state.app.resources.with::<SharedAssetRegistry, _, _>(|a| a.clone());
+                let panels_lock = state.panels.lock();
+                let panels_ref: &EditorPanels = &*panels_lock;
                 let editor_output = state.egui_ctx.run(raw_input, |ctx| {
                     let mut es = state.editor_state.lock();
-                    draw_editor(ctx, &mut es, &snapshots, panels_clone);
+                    let assets_ref = assets.as_ref();
+                    draw_editor(ctx, &mut es, &snapshots, assets_ref);
                 });
-                drop(panels_clone_lock);
+                drop(panels_lock);
 
-                // Apply editor commands (sentinels the UI wrote into the console).
+                // ----- 6. Apply editor commands -----
                 let pending_cmds: Vec<String> = {
                     let mut es = state.editor_state.lock();
                     let cmds: Vec<String> = es.console.iter()
@@ -203,21 +224,60 @@ impl ApplicationHandler for Handler {
                 };
                 apply_editor_commands(&pending_cmds, &state.app.resources, &state.editor_state);
 
-                // Hand the paint jobs + textures to the renderer.
+                // ----- 7. Handle save/load scene requests -----
+                let (save_path, load_path) = {
+                    let es = state.editor_state.lock();
+                    (es.pending_save.clone(), es.pending_load.clone())
+                };
+                if let Some(path) = save_path {
+                    let _ = state.app.resources.with::<SharedWorld, _, _>(|world| {
+                        let scene = Scene::from_world(&*world.lock());
+                        match scene.save_to_path(std::path::Path::new(&path)) {
+                            Ok(_) => state.editor_state.lock().log(format!("Scene saved to {path}")),
+                            Err(e) => state.editor_state.lock().log(format!("Save failed: {e}")),
+                        }
+                    });
+                    state.editor_state.lock().pending_save = None;
+                }
+                if let Some(path) = load_path {
+                    let _ = state.app.resources.with::<SharedWorld, _, _>(|world| {
+                        match Scene::load_from_path(std::path::Path::new(&path)) {
+                            Ok(scene) => {
+                                let mut w = world.lock();
+                                // Clear and respawn.
+                                let to_despawn: Vec<_> = w.iter().map(|r| r.entity()).collect();
+                                for e in to_despawn { let _ = w.despawn(e); }
+                                let _ = scene.spawn_into(&mut w);
+                                state.editor_state.lock().log(format!("Scene loaded from {path}"));
+                            }
+                            Err(e) => state.editor_state.lock().log(format!("Load failed: {e}")),
+                        }
+                    });
+                    state.editor_state.lock().pending_load = None;
+                }
+
+                // ----- 8. Render -----
                 let paint_jobs = state.egui_ctx.tessellate(editor_output.shapes, pixels_per_point);
                 let screen_descriptor = egui_wgpu::ScreenDescriptor {
                     size_in_pixels: [screen_size.width, screen_size.height],
-                    pixels_per_point: pixels_per_point,
+                    pixels_per_point,
                 };
-                if let Err(e) = state.renderer.render_with_ui(
-                    &paint_jobs,
-                    &screen_descriptor,
-                    &editor_output.textures_delta,
-                ) {
-                    log::error!("Render error: {e}");
+                let tex_id = state.scene_texture_id.unwrap_or(egui::TextureId::default());
+                let world_arc = state.app.resources.with::<SharedWorld, _, _>(|w| w.clone());
+                if let Some(world_arc) = world_arc {
+                    let world = world_arc.lock();
+                    if let Err(e) = state.renderer.render_frame(
+                        &world,
+                        &paint_jobs,
+                        &screen_descriptor,
+                        &editor_output.textures_delta,
+                        tex_id,
+                    ) {
+                        log::error!("Render error: {e}");
+                    }
                 }
 
-                // End-of-frame input flush.
+                // ----- 9. End-of-frame input flush -----
                 if let Some(input) = state.app.resources.with::<Input, _, _>(|i| i.clone()) {
                     input.end_frame();
                 }
@@ -234,9 +294,46 @@ impl ApplicationHandler for Handler {
     }
 }
 
-/// Translate the sentinel strings the editor UI writes into the console into
-/// actual mutations of the ECS world.
-fn apply_editor_commands(cmds: &[String], resources: &blaze_core::Resources, editor_state: &SharedEditorState) {
+/// Update the editor camera entity (the first entity with a Camera + Transform
+/// that is the "game" camera — for simplicity, we treat the first camera found
+/// as the editor camera and orbit it around the editor state's target).
+fn update_editor_camera(resources: &Resources, editor_state: &SharedEditorState) {
+    let world_arc = resources.with::<SharedWorld, _, _>(|w| w.clone());
+    let Some(world_arc) = world_arc else { return; };
+    let mut world = world_arc.lock();
+
+    let es = editor_state.lock();
+    let yaw = es.cam_orbit_yaw;
+    let pitch = es.cam_orbit_pitch;
+    let dist = es.cam_distance;
+    let target = es.cam_target;
+    drop(es);
+
+    // Find the first entity with a Camera + Transform, then mutate that
+    // Transform via query_mut (avoids the immutable EntityRef borrow issue).
+    let cam_entity = world.query::<(&Camera, &Transform)>().iter().next().map(|(e, _)| e);
+    if let Some(cam_entity) = cam_entity {
+        // Spherical -> cartesian (orbit camera).
+        let x = target.x + dist * pitch.cos() * yaw.sin();
+        let y = target.y + dist * pitch.sin();
+        let z = target.z + dist * pitch.cos() * yaw.cos();
+        let pos = Vec3::new(x, y, z);
+        // Build a look-at view matrix and extract the rotation as a quat.
+        let view = glam::Mat4::look_at_rh(pos, target, Vec3::Y);
+        let view_rot = glam::Quat::from_mat4(&view);
+        let cam_rot = view_rot.conjugate();
+
+        for (entity, (_, t)) in world.query_mut::<(&Camera, &mut Transform)>() {
+            if entity == cam_entity {
+                t.translation = pos;
+                t.rotation = cam_rot;
+                break;
+            }
+        }
+    }
+}
+
+fn apply_editor_commands(cmds: &[String], resources: &Resources, editor_state: &SharedEditorState) {
     if cmds.is_empty() { return; }
     let world_arc = resources.with::<SharedWorld, _, _>(|w| w.clone());
     let Some(world_arc) = world_arc else { return; };
@@ -244,8 +341,15 @@ fn apply_editor_commands(cmds: &[String], resources: &blaze_core::Resources, edi
 
     for cmd in cmds {
         if cmd == "__BLAZE_ADD_ENTITY__" {
-            let entity = world.spawn((Transform::default(),));
-            editor_state.lock().log(format!("Spawned entity {}", entity.id()));
+            let count = world.iter().count();
+            let e = world.spawn((Name(format!("Entity {count}")), Transform::default()));
+            editor_state.lock().log(format!("Spawned entity {}", e.id()));
+            editor_state.lock().selected_entity = Some(e.id() as u64);
+        } else if cmd == "__BLAZE_NEW_SCENE__" {
+            // Clear world.
+            let to_despawn: Vec<_> = world.iter().map(|r| r.entity()).collect();
+            for e in to_despawn { let _ = world.despawn(e); }
+            editor_state.lock().log("New scene (world cleared)");
         } else if let Some(rest) = cmd.strip_prefix("__BLAZE_DEL_ENTITY__") {
             if let Ok(id_u64) = rest.parse::<u64>() {
                 let to_delete = {
@@ -263,17 +367,62 @@ fn apply_editor_commands(cmds: &[String], resources: &blaze_core::Resources, edi
             }
         } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_TRANSFORM__") {
             if let Ok(id_u64) = rest.parse::<u64>() {
-                let e = {
-                    let mut iter = world.iter();
-                    iter.find(|r| r.entity().id() as u64 == id_u64).map(|r| r.entity())
-                };
+                let e = find_entity(&world, id_u64);
                 if let Some(e) = e {
                     let _ = world.insert_one(e, Transform::default());
                     editor_state.lock().log(format!("Added Transform to entity {id_u64}"));
                 }
             }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_MESH__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, Mesh { primitive: MeshPrimitive::Cube });
+                    let _ = world.insert_one(e, Material::default());
+                    editor_state.lock().log(format!("Added Mesh+Material to entity {id_u64}"));
+                }
+            }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_MATERIAL__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, Material::default());
+                    editor_state.lock().log(format!("Added Material to entity {id_u64}"));
+                }
+            }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_SPRITE__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, Sprite::default());
+                    editor_state.lock().log(format!("Added Sprite to entity {id_u64}"));
+                }
+            }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_CAMERA__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, Camera::default());
+                    editor_state.lock().log(format!("Added Camera to entity {id_u64}"));
+                }
+            }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_DIR_LIGHT__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, DirectionalLight::default());
+                    editor_state.lock().log(format!("Added DirectionalLight to entity {id_u64}"));
+                }
+            }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_POINT_LIGHT__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, PointLight::default());
+                    editor_state.lock().log(format!("Added PointLight to entity {id_u64}"));
+                }
+            }
         } else if let Some(rest) = cmd.strip_prefix("__BLAZE_SET_TRANSFORM__") {
-            // Format: {id} tx ty tz sx sy sz
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if parts.len() == 7 {
                 if let (Ok(id_u64), Ok(tx), Ok(ty), Ok(tz), Ok(sx), Ok(sy), Ok(sz)) = (
@@ -281,20 +430,31 @@ fn apply_editor_commands(cmds: &[String], resources: &blaze_core::Resources, edi
                     parts[1].parse::<f32>(), parts[2].parse::<f32>(), parts[3].parse::<f32>(),
                     parts[4].parse::<f32>(), parts[5].parse::<f32>(), parts[6].parse::<f32>(),
                 ) {
-                    // query_mut gives us mutable access to all Transforms; we
-                    // locate the matching entity id and apply the new values.
-                    let target_id = id_u64;
                     for (entity, t) in world.query_mut::<&mut Transform>() {
-                        if entity.id() as u64 == target_id {
-                            t.translation = blaze_math::Vec3::new(tx, ty, tz);
-                            t.scale = blaze_math::Vec3::new(sx, sy, sz);
+                        if entity.id() as u64 == id_u64 {
+                            t.translation = Vec3::new(tx, ty, tz);
+                            t.scale = Vec3::new(sx, sy, sz);
                             break;
                         }
                     }
                 }
             }
+        } else if let Some(rest) = cmd.strip_prefix("__BLAZE_ADD_RIGIDBODY__") {
+            if let Ok(id_u64) = rest.parse::<u64>() {
+                let e = find_entity(&world, id_u64);
+                if let Some(e) = e {
+                    let _ = world.insert_one(e, RigidBody::default());
+                    let _ = world.insert_one(e, Collider::Box { half_extents: Vec3::new(0.5, 0.5, 0.5) });
+                    editor_state.lock().log(format!("Added RigidBody+Collider to entity {id_u64}"));
+                }
+            }
         }
     }
+}
+
+fn find_entity(world: &blaze_ecs::World, id_u64: u64) -> Option<blaze_ecs::Entity> {
+    let mut iter = world.iter();
+    iter.find(|r| r.entity().id() as u64 == id_u64).map(|r| r.entity())
 }
 
 fn map_key(key: winit::keyboard::Key<winit::keyboard::SmolStr>) -> Option<blaze_input::Key> {
@@ -349,3 +509,7 @@ fn map_button(b: WinitMouseButton) -> Option<MouseButton> {
         WinitMouseButton::Back | WinitMouseButton::Forward | WinitMouseButton::Other(_) => None,
     }
 }
+
+// Silence unused-import warning for `color` (kept for future use).
+#[allow(unused_imports)]
+use blaze_math::color as _color_module;
